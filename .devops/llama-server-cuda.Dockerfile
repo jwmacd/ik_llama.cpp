@@ -1,73 +1,41 @@
 ARG UBUNTU_VERSION=22.04
-ARG CUDA_VERSION=12.2.2
+# This needs to generally match the container host's environment.
+ARG CUDA_VERSION=12.2.0
+# Target the CUDA build image
 ARG BASE_CUDA_DEV_CONTAINER=nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION}
+# Target the CUDA runtime image
 ARG BASE_CUDA_RUN_CONTAINER=nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu${UBUNTU_VERSION}
 
 # ========== BUILD ==========
 FROM ${BASE_CUDA_DEV_CONTAINER} AS build
 
+# Unless otherwise specified, we make a fat build.
+ARG CUDA_DOCKER_ARCH=all
+
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        build-essential \
-        git \
-        libcurl4-openssl-dev \
-        cmake \
-        ca-certificates
+    apt-get install -y build-essential git libcurl4-openssl-dev
 
 WORKDIR /app
 
 # Copy your entire repo to /app
 COPY . .
 
-# Enable CUDA + cURL
+# Set nvcc architecture
+ENV CUDA_DOCKER_ARCH=${CUDA_DOCKER_ARCH}
+# Enable CUDA
 ENV GGML_CUDA=1
+# Enable cURL
 ENV LLAMA_CURL=1
 
-# Add CUDA library paths (these are crucial for runtime linking)
-ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/lib64/stubs:${LD_LIBRARY_PATH}
+RUN make -j$(nproc) llama-server
 
-# Symlink libcuda.so in stubs (good practice, avoids some potential issues)
-RUN ln -s /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1
-
-# Configure & build with CMake.
-RUN cmake -B build \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DGGML_CUDA=ON \
-    -DLLAMA_CURL=ON \
-    -DCMAKE_CUDA_ARCHITECTURES="86;89" \
-    -DLLAMA_BUILD_SERVER=ON \
-     && \
-    cmake --build build --config Release --target llama \
-    && \
-    cmake --build build --config Release --target llama-server
-
-# **DIAGNOSTIC: List the contents of the build directory and its 'lib' subdirectory**
-RUN ls -l /app/build
-RUN ls -l /app/build/src
-
-# ========== RUNTIME ==========
 FROM ${BASE_CUDA_RUN_CONTAINER} AS runtime
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        libcurl4-openssl-dev \
-        libgomp1 \
-        curl
+    apt-get install -y libcurl4-openssl-dev libgomp1 curl
 
-# Copy the installed binary and library
-COPY --from=build /app/build/bin/llama-server /server
-COPY --from=build /app/build/src/libllama.so /usr/local/lib/
+COPY --from=build /app/llama-server /llama-server
 
-# Copy CUDA libraries if you need them in runtime - you likely DO
-COPY --from=build /usr/local/cuda/lib64 /usr/local/cuda/lib64
+HEALTHCHECK CMD [ "curl", "-f", "http://localhost:8080/health" ]
 
-ENV LD_LIBRARY_PATH=/usr/local/lib:/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
-
-# Expose the port (important for Unraid)
-EXPOSE 8000
-
-# Healthcheck (optional)
-HEALTHCHECK CMD [ "curl", "-f", "http://localhost:8000/health" ]
-
-# Final entrypoint
-ENTRYPOINT [ "/server" ]
+ENTRYPOINT [ "/llama-server" ]
