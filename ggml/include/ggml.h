@@ -416,6 +416,7 @@ extern "C" {
         GGML_TYPE_Q8_K32  = 148,
         GGML_TYPE_Q8_KR8  = 149,
         GGML_TYPE_Q8_K128 = 150,
+        GGML_TYPE_Q8_KV   = 151,
 
         GGML_TYPE_Q4_0_R8   = 202,
         GGML_TYPE_Q5_0_R4   = 206,
@@ -442,6 +443,7 @@ extern "C" {
         GGML_TYPE_IQ4_K_R4  = 339,
         GGML_TYPE_IQ5_K_R4  = 340,
         GGML_TYPE_IQ4_KS_R4 = 344,
+        GGML_TYPE_Q8_KV_R8  = 398,
         GGML_TYPE_Q8_K_R8   = 399,
         GGML_TYPE_COUNT,
     };
@@ -501,6 +503,7 @@ extern "C" {
         GGML_FTYPE_MOSTLY_IQ4_KS  = 137, // except 1d tensors
         GGML_FTYPE_MOSTLY_IQ2_KS  = 138, // except 1d tensors
         GGML_FTYPE_MOSTLY_IQ4_KSS = 139, // except 1d tensors
+        GGML_FTYPE_MOSTLY_Q8_KV   = 140, // except 1d tensors
                                          //
         GGML_FTYPE_MOSTLY_Q4_0_R8   = 202, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q8_0_R8   = 207, // except 1d tensors
@@ -527,6 +530,7 @@ extern "C" {
         GGML_FTYPE_MOSTLY_IQ4_K_R4  = 332, // except 1d tensors
         GGML_FTYPE_MOSTLY_IQ5_K_R4  = 333, // except 1d tensors
         GGML_FTYPE_MOSTLY_IQ4_KS_R4 = 337, // except 1d tensors
+        GGML_FTYPE_MOSTLY_Q8_KV_R8  = 398, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q8_K_R8   = 399, // except 1d tensors
     };
 
@@ -563,6 +567,7 @@ extern "C" {
         GGML_OP_MUL_MAT,
         GGML_OP_MUL_MAT_ID,
         GGML_OP_OUT_PROD,
+        GGML_OP_MOE_FUSED_UP_GATE,
 
         GGML_OP_SCALE,
         GGML_OP_SET,
@@ -1315,6 +1320,15 @@ extern "C" {
             struct ggml_tensor  * as,
             struct ggml_tensor  * b,
             struct ggml_tensor  * ids);
+
+    // MoE up + gate + unary
+    GGML_API struct ggml_tensor * ggml_moe_up_gate(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * as_up,
+            struct ggml_tensor  * as_gate,
+            struct ggml_tensor  * b,
+            struct ggml_tensor  * ids,
+            enum ggml_unary_op    op);
 
     // A: m columns, n rows,
     // B: p columns, n rows,
