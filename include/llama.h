@@ -305,6 +305,11 @@ extern "C" {
         };
     };
 
+    struct llama_model_tensor_buft_override {
+        const char * pattern;
+        ggml_backend_buffer_type_t buft;
+    };
+
     struct llama_model_params {
         int32_t n_gpu_layers; // number of layers to store in VRAM
         enum llama_split_mode split_mode; // how to split the model across multiple GPUs
@@ -332,12 +337,15 @@ extern "C" {
         // override key-value pairs of the model meta data
         const struct llama_model_kv_override * kv_overrides;
 
+        const struct llama_model_tensor_buft_override * tensor_buft_overrides;
+
         // Keep the booleans together to avoid misalignment during copy-by-value.
         bool vocab_only;    // only load the vocabulary, no weights
         bool use_mmap;      // use mmap if possible
         bool use_mlock;     // force system to keep model in RAM
         bool check_tensors; // validate model tensor data
         bool repack_tensors;// repack if available
+        bool use_thp;       // uase transparent huge pages (linux only)
     };
 
     // NOTE: changing the default values of parameters marked as [EXPERIMENTAL] may cause crashes or incorrect results in certain configurations
@@ -376,8 +384,11 @@ extern "C" {
         bool embeddings;  // if true, extract embeddings (together with logits)
         bool offload_kqv; // whether to offload the KQV ops (including the KV cache) to GPU
         bool flash_attn;  // whether to use flash attention [EXPERIMENTAL]
-        bool mla_attn;    // whether to use MLA attention [EXPERIMENTAL]
+        int  mla_attn;    // whether to use MLA attention [EXPERIMENTAL]
+        int  attn_max_batch;    // maximum batch size for attention computations [EXPERIMENTAL]
         bool fused_moe_up_gate; // whether to use fused MoE up/down op [EXPERIMENTAL]
+        int  min_experts;
+        float thresh_experts;
 
         // Abort callback
         // if it returns true, execution of llama_decode() will be aborted
@@ -406,8 +417,11 @@ extern "C" {
         bool pure;                           // quantize all tensors to the default type
         bool keep_split;                     // quantize to the same number of shards
         bool ignore_imatrix_rules;           // If set to true, the built-in rules for refusing to quantize into certain quants without imatrix are ignored
+        bool only_repack;                    // Only repack tensors
         void * imatrix;                      // pointer to importance matrix data
         void * kv_overrides;                 // pointer to vector containing overrides
+        void * custom_quants;                // pointer to vector containing custom quantization rules
+        void * repack_pattern;               // pointer to a vector containing regexes to be used for matching tensor names. Can be null
     } llama_model_quantize_params;
 
     // grammar types

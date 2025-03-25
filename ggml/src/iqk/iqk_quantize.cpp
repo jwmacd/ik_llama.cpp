@@ -25,6 +25,7 @@
 #include <thread>
 #include <atomic>
 #include <unordered_map>
+#include <string>
 
 #if defined(_MSC_VER)
 #pragma warning(disable: 4244 4267) // possible loss of data
@@ -184,6 +185,34 @@ void IQ1BNQuantizer::quantize_one_row_2bn(const float * src, block_iq2_bn * y, i
 }
 
 }
+
+void iqk_quantize_any(int from_type, int to_type,
+                      int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3,
+                      uint64_t nb0, uint64_t nb1, uint64_t nb2, uint64_t nb3,
+                      const void * x, void * y, void * work_buffer,
+                      to_float_t to_float, from_float_t from_float, int ith, int nth) {
+    auto type_x = ggml_type(from_type);
+    GGML_ASSERT(ggml_type_size(type_x) == nb0);
+    auto type_y = ggml_type(to_type);
+    auto row_size_y = ggml_row_size(type_y, ne0);
+    int64_t nrows = ne1*ne2*ne3;
+    int64_t nrows_per_thread = (nrows + nth - 1)/nth;
+    int64_t first_row = nrows_per_thread*ith;
+    if (first_row >= nrows) return;
+    int64_t last_row = std::min(first_row + nrows_per_thread, nrows);
+    for (int64_t row = first_row; row < last_row; ++row) {
+        int64_t i3 = row/(ne1*ne2);
+        int64_t i2 = (row - i3*ne1*ne2)/ne1;
+        int64_t i1 = row - i3*ne1*ne2 - i2*ne1;
+        const char * cx = (const char *)x + i1*nb1 + i2*nb2 + i3*nb3;
+        // TODO: special case common types such as f16, q8_0
+        //       (although the performance gains may be too small to justify the added complexity)
+        to_float((const void *)cx, (float *)work_buffer, ne0);
+        auto cy = (char *)y + (i3*ne1*ne2 + i2*ne1 + i1)*row_size_y;
+        from_float((const float *)work_buffer, (void *)cy, ne0);
+    }
+}
+
 
 size_t quantize_iq1_bn(const float * src, void * dst, int64_t nrows, int64_t n_per_row, const float * imatrix) {
     IQ1BNQuantizer iq1bn;
@@ -6738,9 +6767,7 @@ struct Modify {
     modify_func_t  mod_func;
     int            nrows;
 };
-}
-
-bool iqk_modify_tensor(struct ggml_tensor * tensor) {
+const Modify * get_modify_info(ggml_type type) {
     static const std::unordered_map<ggml_type, Modify> k_mod_map = {
 #ifdef __ARM_NEON
         { GGML_TYPE_Q4_0_R8, {modify_q4_0_r8, 8} },
@@ -6751,10 +6778,31 @@ bool iqk_modify_tensor(struct ggml_tensor * tensor) {
         { GGML_TYPE_Q8_KV_R8, {modify_q8_KV_r8, 8} },
 #endif
     };
-    auto it = k_mod_map.find(tensor->type);
-    if (it == k_mod_map.end()) return false;
+    auto it = k_mod_map.find(type);
+    return it != k_mod_map.end() ? &it->second : nullptr;
+}
+bool is_forbidden_tensor(const std::string& name) {
+    static const std::string kTokenEmbd{"token_embd.weight"};
+    if (name == kTokenEmbd) return true;
+    //if (auto pos = name.find("attn_kv_b.weight"); pos != std::string::npos) return true;
+    return false;
+}
+}
 
-    auto& m = it->second;
+bool iqk_should_modify_tensor([[maybe_unused]] const struct ggml_tensor * tensor) {
+    return false;
+    //if (is_forbidden_tensor(tensor->name)) return false;
+    //auto mptr = get_modify_info(tensor->type);
+    //return mptr ? true : false;
+}
+
+bool iqk_modify_tensor(struct ggml_tensor * tensor) {
+    return false;
+    auto mptr = get_modify_info(tensor->type);
+    if (!mptr) return false;
+    if (is_forbidden_tensor(std::string{tensor->name})) return false;
+
+    auto& m = *mptr;
     int nrows = ggml_nrows(tensor);
     int nchunks = nrows/m.nrows;
     int max_thread = std::max(1, int(std::thread::hardware_concurrency()/2));
@@ -6777,12 +6825,8 @@ bool iqk_modify_tensor(struct ggml_tensor * tensor) {
     return true;
 }
 
-void iqk_repack_tensor(struct ggml_tensor * tensor) {
-    constexpr int kChunk = 8;
-    if (!tensor) return;
-    if (!ggml_is_contiguous(tensor)) return;
-    if (strncmp(tensor->name, "token_embd.weight", GGML_MAX_NAME) == 0) return;
-    if (tensor->ne[1] % 4) return;
+namespace {
+const Repack * get_repack_info(ggml_type type) {
     static const std::unordered_map<ggml_type, Repack> k_map = {
         { GGML_TYPE_IQ2_K,  { GGML_TYPE_IQ2_K_R4,  4,  (Repack::repack_func)repack_iq2_k}   },
         { GGML_TYPE_IQ3_K,  { GGML_TYPE_IQ3_K_R4,  4,  (Repack::repack_func)repack_iq3_k}   },
@@ -6813,12 +6857,30 @@ void iqk_repack_tensor(struct ggml_tensor * tensor) {
         { GGML_TYPE_F16,    { GGML_TYPE_BF16_R16, 16,  (Repack::repack_func)repack_bf16<ggml_half>}  },
 #endif
     };
+    auto it = k_map.find(type);
+    return it != k_map.end() ? &it->second : nullptr;
+}
+}
 
-    auto it = k_map.find(tensor->type);
-    if (it == k_map.end()) return;
-    if (tensor->ne[1] % it->second.num_rows) return;
+int iqk_repacked_type(const struct ggml_tensor * tensor) {
+    if (!ggml_is_contiguous(tensor)) return (int)tensor->type;
+    if (is_forbidden_tensor(tensor->name)) return (int)tensor->type;
+    auto rptr = get_repack_info(tensor->type);
+    return rptr && tensor->ne[1] % rptr->num_rows == 0 ? (int)rptr->new_type : (int)tensor->type;
+}
 
-    auto& r = it->second;
+void iqk_repack_tensor(struct ggml_tensor * tensor) {
+    constexpr int kChunk = 8;
+    if (!tensor) return;
+    if (!ggml_is_contiguous(tensor)) return;
+    if (is_forbidden_tensor(tensor->name)) return;
+    if (tensor->ne[1] % 4) return;
+
+    auto rptr = get_repack_info(tensor->type);
+    if (!rptr) return;
+    if (tensor->ne[1] % rptr->num_rows) return;
+
+    auto& r = *rptr;
 
     auto nrows = ggml_nrows(tensor);
 
@@ -6843,7 +6905,8 @@ void iqk_repack_tensor(struct ggml_tensor * tensor) {
             int last_row = std::min(first_row + chunkSize*r.num_rows, nrows);
             for (int row = first_row; row < last_row; row += r.num_rows) {
                 std::memcpy(qtmp.data(), data + row*row_size, r.num_rows*row_size);
-                r.repack(r.num_rows, n_per_row, qtmp.data(), data + row*row_size, true);
+                //r.repack(r.num_rows, n_per_row, qtmp.data(), data + row*row_size, true);
+                r.repack(r.num_rows, n_per_row, qtmp.data(), data + row*row_size, false);
             }
         }
     };
