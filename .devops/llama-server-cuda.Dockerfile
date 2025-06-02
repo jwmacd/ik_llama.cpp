@@ -1,12 +1,11 @@
 ARG UBUNTU_VERSION=22.04
 # This needs to generally match the container host's environment.
-ARG CUDA_VERSION=12.2.0
+ARG CUDA_VERSION=11.7.1
 # Target the CUDA build image
 ARG BASE_CUDA_DEV_CONTAINER=nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION}
 # Target the CUDA runtime image
 ARG BASE_CUDA_RUN_CONTAINER=nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu${UBUNTU_VERSION}
 
-# ========== BUILD ==========
 FROM ${BASE_CUDA_DEV_CONTAINER} AS build
 
 # Unless otherwise specified, we make a fat build.
@@ -17,7 +16,6 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-# Copy your entire repo to /app
 COPY . .
 
 # Set nvcc architecture
