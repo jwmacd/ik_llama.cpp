@@ -19,6 +19,8 @@
 #include <fstream>
 #include <unordered_map>
 #include <algorithm>
+#include <optional>
+#include <sstream>
 
 #if defined(_MSC_VER)
 #pragma warning(disable: 4244 4267) // possible loss of data
@@ -49,13 +51,59 @@ public:
     bool collect_imatrix(struct ggml_tensor * t, bool ask, void * user_data);
     void save_imatrix(int ncall = -1) const;
     bool load_imatrix(const char * file_name);
+    void set_collect_lsim(bool yes_or_no) { m_collect_lsim = yes_or_no; }
+    void print_layer_importance();
 private:
     std::unordered_map<std::string, Stats> m_stats;
     gpt_params                             m_params;
     std::mutex                             m_mutex;
     int                                    m_last_call = 0;
-    std::vector<float>                     m_src1_data;
+    int                                    m_last_layer = 9999;
+    int                                    m_last_ffn = -1;
+    std::vector<char>                      m_src1_data;
     std::vector<char>                      m_ids; // the expert ids from ggml_mul_mat_id
+    std::vector<float>                     m_last_input;
+    std::vector<float>                     m_ffn_input;
+    std::vector<std::pair<double,int>>     m_layer_sim;
+    std::vector<std::pair<double,int>>     m_attn_sim;
+    std::vector<std::pair<double,int>>     m_ffn_sim;
+    bool                                   m_collect_lsim = false;
+
+    std::optional<int> layer_index(const std::string& name) const {
+        if (name == m_params.output_tensor_name && m_last_layer < 199) {
+            return m_last_layer + 1;
+        }
+        if (auto pos = name.find("blk."); pos == 0) {
+            pos += 4;
+            if (auto pos1 = name.find('.', pos); pos1 != std::string::npos) {
+                auto index_str = name.substr(pos, pos1 - pos);
+                std::istringstream str(index_str);
+                int index; str >> index;
+                if (!str.fail()) return index;
+            }
+        }
+        return std::nullopt;
+    }
+
+    static inline double cosine_similarity(int n, const float * x, const float * y) {
+        double sumxy = 0, sumx2 = 0, sumy2 = 0;
+        for (int j = 0; j < n; ++j) {
+            sumxy += x[j]*y[j]; sumx2 += x[j]*x[j]; sumy2 += y[j]*y[j];
+        }
+        double cos_sim = sumx2 > 0 && sumy2 > 0 ? sumxy/sqrt(sumx2*sumy2) : 0;
+        return cos_sim;
+    }
+
+    static inline void collect_cos_similarity(int nrow, int n, const float * x, const float * y, std::pair<double, int>& p) {
+        for (int row = 0; row < nrow; ++row) {
+            p.first  += cosine_similarity(n, x, y);
+            p.second += 1;
+            x += n;
+            y += n;
+        }
+    }
+
+    static void print_layer_importance(const char * msg, const std::vector<std::pair<double, int>>& sim);
 };
 
 // remove any prefix and suffixes from the name
@@ -77,6 +125,45 @@ static std::string filter_tensor_name(const char * name) {
     return wname;
 }
 
+void IMatrixCollector::print_layer_importance(const char * msg, const std::vector<std::pair<double, int>>& sim) {
+    if (sim.empty()) return;
+    std::vector<std::pair<float, int>> layers;
+    layers.reserve(sim.size());
+    for (int i = 0; i < int(sim.size()); ++i) {
+        if (sim[i].second > 0) layers.emplace_back(float(std::abs(sim[i].first/sim[i].second)), i);
+    }
+    if (layers.empty()) return;
+    std::sort(layers.begin(), layers.end());
+    printf("%s\n", msg);
+    //printf("======================== sorted layer importances\n");
+    int j = 0;
+    for (auto& p : layers) {
+        int i = p.second;
+        printf("%3d: Layer %3d, <cos_sim> = %g\n", j++, i, sim[i].first/sim[i].second);
+    }
+}
+
+void IMatrixCollector::print_layer_importance() {
+    print_layer_importance("\n======================== sorted layer importances", m_layer_sim);
+    print_layer_importance("\n======================== sorted attention importances", m_attn_sim);
+    print_layer_importance("\n======================== sorted ffn importances", m_ffn_sim);
+    //printf("%s: have %d layers\n", __func__, int(m_layer_sim.size()));
+    //if (m_layer_sim.empty()) return;
+    //std::vector<std::pair<float, int>> layers;
+    //layers.reserve(m_layer_sim.size());
+    //for (int i = 0; i < int(m_layer_sim.size()); ++i) {
+    //    if (m_layer_sim[i].second > 0) layers.emplace_back(float(std::abs(m_layer_sim[i].first/m_layer_sim[i].second)), i);
+    //}
+    //if (layers.empty()) return;
+    //std::sort(layers.begin(), layers.end());
+    //printf("======================== sorted layer importances\n");
+    //int j = 0;
+    //for (auto& p : layers) {
+    //    int i = p.second;
+    //    printf("%3d: Layer %3d, <cos_sim> = %g\n", j++, i, m_layer_sim[i].first/m_layer_sim[i].second);
+    //}
+}
+
 bool IMatrixCollector::collect_imatrix(struct ggml_tensor * t, bool ask, void * user_data) {
     GGML_UNUSED(user_data);
 
@@ -92,7 +179,7 @@ bool IMatrixCollector::collect_imatrix(struct ggml_tensor * t, bool ask, void * 
         // why are small batches ignored (<16 tokens)?
         if (src1->ne[1] < 16 || src1->type != GGML_TYPE_F32) return false;
         //printf("wname = %s\n", wname.c_str());
-        if (!(wname.substr(0, 4) == "blk." || (m_params.process_output && wname == m_params.output_tensor_name))) return false;
+        if (!(wname.substr(0, 4) == "blk." || ((m_params.process_output || m_collect_lsim) && wname == m_params.output_tensor_name))) return false;
         return true;
     }
 
@@ -102,11 +189,39 @@ bool IMatrixCollector::collect_imatrix(struct ggml_tensor * t, bool ask, void * 
     const bool is_host = ggml_backend_buffer_is_host(src1->buffer);
 
     if (!is_host) {
-        m_src1_data.resize(ggml_nelements(src1));
-        ggml_backend_tensor_get(src1, m_src1_data.data(), 0, ggml_nbytes(src1));
+        auto nbytes = ggml_nbytes(src1);
+        m_src1_data.resize(nbytes);
+        ggml_backend_tensor_get(src1, m_src1_data.data(), 0, nbytes);
     }
 
-    const float * data = is_host ? (const float *) src1->data : m_src1_data.data();
+    const float * data = is_host ? (const float *) src1->data : (const float *)m_src1_data.data();
+
+    if (m_collect_lsim) {
+        if (wname.find(".ffn_") != std::string::npos) {
+            if (auto index = layer_index(wname); index.has_value() && *index == m_last_layer && *index != m_last_ffn) {
+                int n = src1->ne[0];
+                int nrow = t->op == GGML_OP_MUL_MAT_ID ? src1->ne[2] : src1->ne[1];
+                if (t->op == GGML_OP_MUL_MAT_ID) {
+                    GGML_ASSERT(src1->ne[1] == 1);
+                }
+                if (m_ffn_input.empty()) {
+                    m_ffn_input.resize(nrow*n);
+                } else {
+                    if ((int)m_ffn_input.size() != nrow*n) {
+                        printf("Oops, inconsistent ffn size\n"); exit(1);
+                    }
+                }
+                std::memcpy(m_ffn_input.data(), data, nrow*n*sizeof(float));
+                if (m_ffn_input.size() != m_last_input.size()) {
+                    printf("Oops, inconsistent ffn vs last_input size\n"); exit(1);
+                }
+                if (m_attn_sim.size() < *index + 1) m_attn_sim.resize(*index + 1);
+                auto& p = m_attn_sim[*index];
+                collect_cos_similarity(nrow, n, m_ffn_input.data(), m_last_input.data(), p);
+                m_last_ffn = *index;
+            }
+        }
+    }
 
     // this has been adapted to the new format of storing merged experts in a single 3d tensor
     // ref: https://github.com/ggerganov/llama.cpp/pull/6387
@@ -182,12 +297,52 @@ bool IMatrixCollector::collect_imatrix(struct ggml_tensor * t, bool ask, void * 
             }
         }
     } else {
+        if (m_collect_lsim) {
+            // We only need to do it here and not in the MoE branch above because the first tensor in a layer
+            // never is a MoE tensor
+            if (auto index = layer_index(wname); index.has_value()) {
+                if (*index != m_last_layer) {
+                    if (*index > 0) {
+                        if (m_last_input.size() != src1->ne[0]*src1->ne[1]) {
+                            printf("Oops: different size (%d vs %d). Tensor name was %s, m_last_layer = %d\n",
+                                    (int)(src1->ne[0]*src1->ne[1]), (int)m_last_input.size(), src0->name, m_last_layer);
+                            exit(1);
+                        }
+                        if (*index > m_layer_sim.size()) m_layer_sim.resize(*index);
+                        auto& p = m_layer_sim[*index - 1];
+                        collect_cos_similarity(src1->ne[1], src1->ne[0], m_last_input.data(), (const float *)data, p);
+                        if (*index == m_last_ffn + 1) {
+                            if (*index > m_ffn_sim.size()) m_ffn_sim.resize(*index);
+                            auto& p1 = m_ffn_sim[*index-1];
+                            collect_cos_similarity(src1->ne[1], src1->ne[0], m_ffn_input.data(), (const float *)data, p1);
+                        }
+                    }
+                    m_last_layer = *index;
+                    if (m_last_input.empty()) {
+                        m_last_input.resize(src1->ne[0]*src1->ne[1]);
+                    } else {
+                        if (m_last_input.size() != src1->ne[0]*src1->ne[1]) {
+                            printf("Oops\n"); exit(1);
+                        }
+                    }
+                    //printf("Copying src1 to m_last_input\n");
+                    std::memcpy(m_last_input.data(), data, src1->ne[0]*src1->ne[1]*sizeof(float));
+                }
+            }
+        }
         auto & e = m_stats[wname];
         if (e.values.empty()) {
-            e.values.resize(src1->ne[0], 0);
-            e.counts.resize(src1->ne[0], 0);
+            if (src0->ne[3] > 1) {
+                fprintf(stderr, "Unsupported 4D tensor %s\n", wname.c_str());
+                exit(1);
+            }
+            // If we have a 3D tensor as it is the case for the attn_k_b and attn_v_b for DeepSeek MLA models,
+            // than we need to compute the imatrix for each head, and not just one imatrx for all heads.
+            // Hence, the storage we need is src0->ne[0]*src0->ne[2].
+            e.values.resize(src0->ne[0]*src0->ne[2], 0);
+            e.counts.resize(src0->ne[0]*src0->ne[2], 0);
         }
-        else if (e.values.size() != (size_t)src1->ne[0]) {
+        else if (e.values.size() != (size_t)(src0->ne[0]*src0->ne[2])) {
             fprintf(stderr, "Oops: inconsistent size for %s (%d vs %d)\n", wname.c_str(), (int)e.values.size(), (int)src1->ne[0]);
             exit(1); //GGML_ABORT("fatal error");
         }
@@ -195,14 +350,20 @@ bool IMatrixCollector::collect_imatrix(struct ggml_tensor * t, bool ask, void * 
         if (m_params.verbosity > 1) {
             printf("%s[%d]: %32s, %s, %5d x %5d, %d\n", __func__, m_last_call, wname.c_str(), ggml_op_name(t->op), (int)src1->ne[0], (int)src1->ne[1], (int)src1->type);
         }
-        for (int row = 0; row < (int)(src1->ne[1]*src1->ne[2]); ++row) {
-            const float * x = data + row * src1->ne[0];
-            for (int j = 0; j < (int)src1->ne[0]; ++j) {
-                e.values[j] += x[j]*x[j];
-                e.counts[j]++;
-                if (!std::isfinite(e.values[j])) {
-                    fprintf(stderr, "%f detected in %s\n", e.values[j], wname.c_str());
-                    exit(1);
+        int rk2 = src1->ne[2]/src0->ne[2];
+        for (int i12 = 0; i12 < (int)src1->ne[2]; ++i12) {  // i.e., loop over attention heads for MLA models
+            int i02 = i12/rk2;
+            auto values = e.values.data() + i02*src0->ne[0];
+            auto counts = e.counts.data() + i02*src0->ne[0];
+            for (int i11 = 0; i11 < (int)src1->ne[1]; ++i11) {
+                const float * x = (const float *)((const char *)data + i11*src1->nb[1] + i12*src1->nb[2]);
+                for (int j = 0; j < (int)src1->ne[0]; ++j) {
+                    values[j] += x[j]*x[j];
+                    counts[j]++;
+                    if (!std::isfinite(values[j])) {
+                        fprintf(stderr, "%f detected in %s\n", e.values[j], wname.c_str());
+                        exit(1);
+                    }
                 }
             }
         }
@@ -622,7 +783,25 @@ int main(int argc, char ** argv) {
     params.logits_all = true;
     params.verbosity = 1;
 
-    if (!gpt_params_parse(argc, argv, params)) {
+    bool lsim = false;
+    //
+    // Do not pollute common with totally imatrix specific arguments as it was done in mainline.
+    // Instead, parse imatrix specific args here, push unknown args into a new array of args,
+    // and pass that to gpt_params_parse().
+    //
+    std::vector<char*> args;
+    args.reserve(argc);
+    args.push_back(argv[0]);
+    for (int i = 1; i < argc; ++i) {
+        std::string arg{argv[i]};
+        if (arg == "-lsim" || arg == "--layer-similarity") {
+            lsim = true;
+        } else {
+            args.push_back(argv[i]);
+        }
+    }
+
+    if (!gpt_params_parse(args.size(), args.data(), params)) {
         print_usage(argc, argv, params);
         return 1;
     }
@@ -630,6 +809,7 @@ int main(int argc, char ** argv) {
     params.n_batch = std::min(params.n_batch, params.n_ctx);
 
     g_collector.set_params(params);
+    g_collector.set_collect_lsim(lsim);
 
     for (const auto & in_file : params.in_files) {
         printf("%s : loading imatrix from '%s'\n", __func__, in_file.c_str());
@@ -680,6 +860,7 @@ int main(int argc, char ** argv) {
     }
 
     g_collector.save_imatrix();
+    g_collector.print_layer_importance();
 
     llama_print_timings(ctx);
 

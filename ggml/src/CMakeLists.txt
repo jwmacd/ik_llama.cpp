@@ -258,11 +258,40 @@ set (GGML_HEADERS_IQK iqk/iqk_config.h)
 if (GGML_IQK_MUL_MAT)
     message(STATUS "Using optimized iqk matrix multiplications")
     add_compile_definitions(GGML_USE_IQK_MULMAT)
-    set(GGML_SOURCES_IQK_MM iqk/iqk_mul_mat.cpp iqk/iqk_flash_attn.cpp)
-    set(GGML_HEADERS_IQK_MM iqk/iqk_mul_mat.h iqk/iqk_flash_impl.h)
-    if (GGML_IQK_FA_ALL_QUANTS)
-        message(STATUS "Including all IQK FA kernels")
-        add_compile_definitions(GGML_IQK_FA_ALL_QUANTS)
+    set(GGML_SOURCES_IQK_MM iqk/iqk_mul_mat.cpp
+                            iqk/iqk_flash_attn.cpp
+                            iqk/fa/iqk_fa_576_512.cpp
+                            iqk/fa/iqk_fa_192_128.cpp
+                            iqk/fa/iqk_fa_256_256.cpp
+                            iqk/fa/iqk_fa_128_128.cpp
+                            iqk/fa/iqk_fa_96_96.cpp
+                            iqk/fa/iqk_fa_64_64.cpp
+                            iqk/iqk_gemm_floats.cpp
+                            iqk/iqk_gemm_kquants.cpp
+                            iqk/iqk_gemm_ktquants.cpp
+                            iqk/iqk_gemm_iquants.cpp
+                            iqk/iqk_gemm_iqk_quants.cpp
+                            iqk/iqk_gemm_1bit.cpp
+                            iqk/iqk_gemm_legacy_quants.cpp)
+    set(GGML_HEADERS_IQK_MM iqk/iqk_mul_mat.h
+                            iqk/iqk_flash_impl.h
+                            iqk/fa/iqk_fa_templates.h
+                            iqk/iqk_gemm_floats.h
+                            iqk/iqk_gemm_kquants.h
+                            iqk/iqk_gemm_ktquants.h
+                            iqk/iqk_gemm_iquants.h
+                            iqk/iqk_gemm_iqk_quants.h
+                            iqk/iqk_gemm_1bit.h
+                            iqk/iqk_gemm_legacy_quants.h)
+    if (GGML_IQK_FLASH_ATTENTION)
+        message(STATUS "Enabling IQK Flash Attention kernels")
+        add_compile_definitions(GGML_IQK_FLASH_ATTENTION)
+        if (GGML_IQK_FA_ALL_QUANTS)
+            message(STATUS "Including all IQK FA kernels")
+            add_compile_definitions(GGML_IQK_FA_ALL_QUANTS)
+        endif()
+    else()
+        message(STATUS "Disabling IQK Flash Attention kernels")
     endif()
 endif()
 
@@ -320,6 +349,8 @@ if (GGML_CUDA)
         file(GLOB   GGML_SOURCES_CUDA "ggml-cuda/*.cu")
         list(APPEND GGML_SOURCES_CUDA "ggml-cuda.cu")
         file(GLOB   SRCS "ggml-cuda/template-instances/fattn-wmma*.cu")
+        list(APPEND GGML_SOURCES_CUDA ${SRCS})
+        file(GLOB   SRCS "ggml-cuda/template-instances/fattn-mma*.cu")
         list(APPEND GGML_SOURCES_CUDA ${SRCS})
         file(GLOB   SRCS "ggml-cuda/template-instances/mmq*.cu")
         list(APPEND GGML_SOURCES_CUDA ${SRCS})
@@ -984,7 +1015,7 @@ endif()
 set(CUDA_CXX_FLAGS "")
 
 if (GGML_CUDA)
-    set(CUDA_FLAGS -use_fast_math)
+    set(CUDA_FLAGS -use_fast_math -extended-lambda)
 
     if (GGML_FATAL_WARNINGS)
         list(APPEND CUDA_FLAGS -Werror all-warnings)
@@ -1086,7 +1117,7 @@ if (NOT MSVC)
     endif()
 endif()
 
-set(ARCH_FLAGS "")
+set(ARCH_FLAGS ${GGML_ARCH_FLAGS})
 
 if (CMAKE_OSX_ARCHITECTURES      STREQUAL "arm64" OR
     CMAKE_GENERATOR_PLATFORM_LWR STREQUAL "arm64" OR
@@ -1146,6 +1177,10 @@ if (CMAKE_OSX_ARCHITECTURES      STREQUAL "arm64" OR
         endif()
         if (GGML_SVE)
             list(APPEND ARCH_FLAGS -march=armv8.6-a+sve)
+        endif()
+        if (CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+            # else we fail on Gravitons and such
+            list(APPEND ARCH_FLAGS -flax-vector-conversions)
         endif()
     endif()
 elseif (CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64" OR CMAKE_GENERATOR_PLATFORM_LWR MATCHES "^(x86_64|i686|amd64|x64|win32)$" OR

@@ -1,3 +1,9 @@
+//
+// Copyright (C) 2024-2025 Iwan Kawrakow
+// MIT license
+// SPDX-License-Identifier: MIT
+//
+
 #pragma once
 
 #if defined IQK_IMPLEMENT
@@ -6,6 +12,20 @@
 
 #if defined __AVX2__ || defined __ARM_FEATURE_DOTPROD
 #define IQK_IMPLEMENT
+#endif
+
+#ifdef GGML_SHARED
+#    if defined(_WIN32) && !defined(__MINGW32__)
+#        ifdef GGML_BUILD
+#            define IQK_API __declspec(dllexport)
+#        else
+#            define IQK_API __declspec(dllimport)
+#        endif
+#    else
+#        define IQK_API __attribute__ ((visibility ("default")))
+#    endif
+#else
+#    define IQK_API
 #endif
 
 #ifdef _MSC_VER

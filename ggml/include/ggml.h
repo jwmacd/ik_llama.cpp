@@ -1,3 +1,10 @@
+//
+// Copyright (C) 2023-2025 The ggml authors
+// Copyright (C) 2024-2025 Iwan Kawrakow
+// MIT license
+// SPDX-License-Identifier: MIT
+//
+
 #pragma once
 
 //
@@ -418,6 +425,10 @@ extern "C" {
         GGML_TYPE_Q8_KR8  = 149,
         GGML_TYPE_Q8_K128 = 150,
         GGML_TYPE_Q8_KV   = 151,
+        GGML_TYPE_IQ5_KS  = 152,
+        GGML_TYPE_IQ2_KT  = 153,
+        GGML_TYPE_IQ3_KT  = 154,
+        GGML_TYPE_IQ4_KT  = 155,
 
         GGML_TYPE_Q4_0_R8   = 202,
         GGML_TYPE_Q5_0_R4   = 206,
@@ -444,6 +455,7 @@ extern "C" {
         GGML_TYPE_IQ4_K_R4  = 339,
         GGML_TYPE_IQ5_K_R4  = 340,
         GGML_TYPE_IQ4_KS_R4 = 344,
+        GGML_TYPE_IQ5_KS_R4 = 352,
         GGML_TYPE_Q8_KV_R8  = 398,
         GGML_TYPE_Q8_K_R8   = 399,
         GGML_TYPE_COUNT,
@@ -505,6 +517,10 @@ extern "C" {
         GGML_FTYPE_MOSTLY_IQ2_KS  = 138, // except 1d tensors
         GGML_FTYPE_MOSTLY_IQ4_KSS = 139, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q8_KV   = 140, // except 1d tensors
+        GGML_FTYPE_MOSTLY_IQ5_KS  = 141, // except 1d tensors
+        GGML_FTYPE_MOSTLY_IQ2_KT  = 142, // except 1d tensors
+        GGML_FTYPE_MOSTLY_IQ3_KT  = 143, // except 1d tensors
+        GGML_FTYPE_MOSTLY_IQ4_KT  = 144, // except 1d tensors
                                          //
         GGML_FTYPE_MOSTLY_Q4_0_R8   = 202, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q8_0_R8   = 207, // except 1d tensors
@@ -531,6 +547,7 @@ extern "C" {
         GGML_FTYPE_MOSTLY_IQ4_K_R4  = 332, // except 1d tensors
         GGML_FTYPE_MOSTLY_IQ5_K_R4  = 333, // except 1d tensors
         GGML_FTYPE_MOSTLY_IQ4_KS_R4 = 337, // except 1d tensors
+        GGML_FTYPE_MOSTLY_IQ5_KS_R4 = 341, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q8_KV_R8  = 398, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q8_K_R8   = 399, // except 1d tensors
     };
